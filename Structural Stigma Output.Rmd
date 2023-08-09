@@ -1,0 +1,360 @@
+---
+title: "Structural Stigma Analysis"
+author: "Laura Jans"
+date: "2023-03-05"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+library(Hmisc)
+library(tidyverse)
+library(gsheet)
+library(zipcodeR)
+library(corrplot)
+library(psych)
+library(stargazer)
+library(interactions)
+library(car)
+library(olsrr)
+
+```
+
+# Step 1: Create Structural Stigma Variable
+
+First, access Project Implicit data
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+setwd("C:/Users/jansl/OneDrive/Documents/Structural Stigma Project")
+
+project_imp_data <- read.csv("Sexuality_IAT.public.2022.csv")
+
+# Access complete cases of relevant variables
+
+project_imp_data_1 <- project_imp_data %>% 
+  
+  # Selecting variables
+  dplyr::select(adoptchild, marriagerights_3num, relationslegal_3num, serverights, transgender, STATE) %>%
+  
+  # Replace blanks with NA for the variable "STATE"
+  mutate(STATE = ifelse(STATE == " ", NA_character_, STATE))
+
+# Removing rows containing NA
+project_imp_data_2 <- project_imp_data_1 %>% filter(complete.cases(.))
+
+```
+
+Recode all values (-1 = positive opinion; 1 = negative opinion [i.e. more prejudice]; 0 = no opinion)
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+# Do you think it should be legal for same-sex partners to adopt a child?
+project_imp_data_3 <- project_imp_data_2 %>% 
+  mutate(adoptchild = case_when(
+    adoptchild == 1 ~ -1,
+    adoptchild == 2 ~ 1,
+    adoptchild == 3 ~ 0
+  ))
+
+# Do you think marriages between same-sex partners should or should not be recognized 
+# by the law as valid, with the same rights as traditional marriages?
+project_imp_data_4 <- project_imp_data_3 %>% 
+  mutate(marriagerights_3num = case_when(
+    marriagerights_3num == 1 ~ -1,
+    marriagerights_3num == 2 ~ 1,
+    marriagerights_3num == 3 ~ 0,
+  ))
+
+# Do you think homosexual relations between consenting adults should or should not be legal?
+project_imp_data_5 <- project_imp_data_4 %>% 
+  mutate(relationslegal_3num = case_when(
+    relationslegal_3num == 1 ~ -1,
+    relationslegal_3num == 2 ~ 1,
+    relationslegal_3num == 3 ~ 0,
+  ))
+
+# Do you think it should be legal for business owners to refuse to serve same-sex partners?
+project_imp_data_6 <- project_imp_data_5 %>% 
+  mutate(serverights = case_when(
+    serverights == 1 ~ 1,
+    serverights == 2 ~ -1,
+    serverights == 3 ~ 0,
+  ))
+
+# Which of the following statements best reflects your belief?
+project_imp_data_7 <- project_imp_data_6 %>% 
+  mutate(transgender = case_when(
+    transgender == 1 ~ 1,
+    transgender == 2 ~ -1,
+  ))
+
+```
+
+Calculate averages grouped by state
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+project_imp_data_avg <- project_imp_data_7 %>% 
+  group_by(STATE) %>% 
+  dplyr::summarize(
+    adoptchild_avg = mean(adoptchild),
+    marriagerights_3num_avg = mean(marriagerights_3num),
+    relationslegal_3num_avg = mean(relationslegal_3num),
+    serverights_avg = mean(serverights),
+    transgender_avg = mean(transgender)
+  ) %>% 
+  
+  # Calculate the mean of the averages for each row
+  mutate(avg_all = rowMeans(.[c("adoptchild_avg", "marriagerights_3num_avg", 
+                                "relationslegal_3num_avg", "serverights_avg", 
+                                "transgender_avg")])) %>%
+  
+  # Reorder the rows based on the avg_all column in descending order
+  arrange(desc(avg_all)) %>%
+  
+  # Rename state column to match other data frames for later merging
+  rename(state = STATE)
+
+```
+
+Access a Google sheet where an equality index has already been manually coded for each state based on legislation
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+equality_index <- gsheet2tbl('https://docs.google.com/spreadsheets/d/1q5KSUTl-QCdA3jxdIW4tuMs9b4pXc7f9XwVjQPd5kdc/edit#gid=0')
+
+```
+
+Delete any row in Project Implicit data set containing characters which are not one of the 50 state abbreviations(e.g. "AA")
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+project_imp_data_avg_2 <- project_imp_data_avg %>% 
+  
+  mutate(state = if_else(project_imp_data_avg$state %in% equality_index$state, 
+        project_imp_data_avg$state, NA_character_))
+
+project_imp_data_avg_3 <- project_imp_data_avg_2 %>% filter(complete.cases(.)) 
+
+```
+
+Create z-scores, separately, for state equality indexes and state-level explicit prejudice scores
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+equality_index_z <- equality_index %>% mutate(state_index_z = scale(state_index))
+  
+project_imp_data_avg_z <- project_imp_data_avg_3 %>% mutate(avg_all_z = scale(avg_all)) 
+
+```
+
+Merge the two data frames by state; average the two z-scores for each state
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+# Merging the two data frames by state
+
+structural_stigma_merged <- merge(equality_index_z, project_imp_data_avg_z, by = "state")
+
+# Averaging the two z-scores for each state
+
+structural_stigma <- structural_stigma_merged %>%
+  mutate(combined_avg = (state_index_z + avg_all_z) / 2) %>%
+  
+  # Select only the state and combined_avg columns for a new data frame
+  select(state, combined_avg) %>% arrange(desc(combined_avg))
+
+```
+
+# Step 2: Merge Structural Stigma Variable With Rise Data
+
+Access complete cases of relevant Rise variables
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+rise_df_0 <- read.csv("CleanedRiseData.csv")
+
+rise_df_1 <- rise_df_0 %>%
+  
+  # Removing timing variables
+  select(-contains("tim")) %>%
+  
+  # Selecting variables
+  select(b_mspss_FRIENDS_av, b_mspss_FAMILY_av, b_mspss_SIG_av, 
+         b_self_hate_av, b_intstigma_av, b_cdi_av, b_dem_zip_code) %>%
+  
+  # Removing rows containing NA
+  filter(complete.cases(.)) %>%
+  
+  # Standardize numeric variables
+  mutate(across(c(b_mspss_FRIENDS_av, b_mspss_FAMILY_av, 
+                  b_self_hate_av, b_intstigma_av, b_cdi_av), 
+                scale,
+                .names = "{col}_scaled"))
+
+```
+
+Link a state to each participant zip code
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+# Rename zip code column 
+
+rise_df_2 <- rise_df_1 %>% rename(zipcode = b_dem_zip_code)
+
+# Add ID variable for later sorting
+
+rise_df_2$id  <- 1:nrow(rise_df_2)
+
+# Creating a look-up table for all valid zip codes given by participants and corresponding states
+
+valid_zip_codes_0 <- reverse_zipcode(rise_df_2$zipcode)[,c(1,7)]
+
+valid_zip_codes <- valid_zip_codes_0 %>% filter(complete.cases(.))
+
+# Merge both data frames to create a state variable for each participant 
+# who provided a valid zip code
+
+rise_df_states_inc <- merge(rise_df_2, valid_zip_codes, by = "zipcode")
+
+rise_df_states_inc <- rise_df_states_inc[order(rise_df_states_inc$id), ]
+
+df_final <- merge(structural_stigma, rise_df_states_inc, by = "state") %>% 
+  rename(structural_stigma_var = combined_avg)
+
+```
+
+# Step 3: Looking at Correlations Between Our Variables
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+corr_matrix <- df_final %>%
+  select(structural_stigma_var, b_mspss_FRIENDS_av, b_mspss_FAMILY_av, b_cdi_av, 
+         b_self_hate_av, b_intstigma_av) %>%
+  cor()
+
+
+df_for_cor <- df_final %>% 
+  select(structural_stigma_var, b_mspss_FRIENDS_av, b_mspss_FAMILY_av, b_cdi_av, 
+         b_self_hate_av, b_intstigma_av)
+
+res <- rcorr(as.matrix(df_for_cor))
+round(res$P, 3)
+
+col <- colorRampPalette(c("#BB4444", "#EE9988", "#FFFFFF", "#77AADD", "#4477AA"))
+
+corrplot(corr_matrix, method="color", col=col(200),  
+         type="upper", order="hclust", 
+         addCoef.col = "black", # Add coefficient of correlation
+         tl.col="black", tl.srt=45, #Text label color and rotation
+         # Combine with significance
+         p.mat = res$P, sig.level = 0.05, insig = "blank", 
+         # hide correlation coefficient on the principal diagonal
+         diag=FALSE 
+         )
+
+```
+
+In the above visual, each box contains the correlation coefficient. Only boxes with colors are significant correlations; the rest are blank for easier interpretation. The other text matrix contains the p values for each correlation. Structural stigma is correlated with perceived family support (r = -0.11, p = 0.02). Perceived family support is correlated with perceived friend support (r = 0.18, p < 0.01), CDI (r = -0.51, p < 0.01), self-hatred (r = 0.73, p < 0.01), and internalized stigma (r = -0.1, p = 0.04). Perceived friend support is correlated with CDI (r = -0.27, p < 0.01) and self-hatred (r = -0.23, p < 0.01). CDI is correlated with self-hatred (r = 0.73, p < 0.01) and internalized stigma (r = 0.18, p < 0.01).
+
+# Step 4: Running Regression Analyses
+
+### CDI
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+model_cdi_1 <- lm(data = df_final, b_cdi_av ~ 
+               structural_stigma_var)
+
+model_cdi_2 <- lm(data = df_final, b_cdi_av ~ 
+               b_mspss_FRIENDS_av + 
+               structural_stigma_var)
+
+model_cdi_3 <- lm(data = df_final, b_cdi_av ~ 
+               b_mspss_FRIENDS_av + 
+               b_mspss_FAMILY_av + 
+               structural_stigma_var)
+
+model_cdi_4 <- lm(data = df_final, b_cdi_av ~ 
+               b_mspss_FRIENDS_av + 
+               b_mspss_FAMILY_av + 
+               structural_stigma_var + 
+               b_mspss_FRIENDS_av*structural_stigma_var + b_mspss_FAMILY_av*structural_stigma_var)
+
+stargazer(model_cdi_1, model_cdi_2, model_cdi_3, model_cdi_4, type = "html")
+
+```
+
+
+In the above regression output, the fourth model includes every variable and interaction of interest. The main number is the regression coefficient and the number in parentheses is the standard error. When the variables are added in a step-wise manner, structural stigma is only a significant predictor of CDI (b = 0.03, p = 0.04) when it is included as a predictor with friend support only. When family support is added as a predictor, structural stigma is no longer significant. In the final model, family support (b = -0.12, p < 0.01) and friend support (b = -0.05, p < 0.01) are significant predictors of CDI. Structural stigma and both interaction terms are not significant predictors.
+
+### Self-hatred
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+model_sh_1 <- lm(data = df_final, b_self_hate_av ~ 
+               structural_stigma_var)
+
+model_sh_2 <- lm(data = df_final, b_self_hate_av ~ 
+               b_mspss_FRIENDS_av + 
+               structural_stigma_var)
+
+model_sh_3 <- lm(data = df_final, b_self_hate_av ~ 
+               b_mspss_FRIENDS_av + 
+               b_mspss_FAMILY_av + 
+               structural_stigma_var)
+
+model_sh_4 <- lm(data = df_final, b_self_hate_av ~ 
+               b_mspss_FRIENDS_av + 
+               b_mspss_FAMILY_av + 
+               structural_stigma_var + 
+               b_mspss_FRIENDS_av*structural_stigma_var + b_mspss_FAMILY_av*structural_stigma_var)
+
+stargazer(model_sh_1, model_sh_2, model_sh_3, model_sh_4, type = "html")
+
+```
+
+
+Structural stigma does not significantly predict self-hatred in any model. In the final model, friend support (b = -0.19, p < 0.01) and family support (b = -0.44, p < 0.01) are significant predictors of self-hatred.
+
+### Internalized Stigma
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+model_is_1 <- lm(data = df_final, b_intstigma_av ~ 
+               structural_stigma_var)
+
+model_is_2 <- lm(data = df_final, b_intstigma_av ~ 
+               b_mspss_FRIENDS_av + 
+               structural_stigma_var)
+
+model_is_3 <- lm(data = df_final, b_intstigma_av ~ 
+               b_mspss_FRIENDS_av + 
+               b_mspss_FAMILY_av + 
+               structural_stigma_var)
+
+model_is_4 <- lm(data = df_final, b_intstigma_av ~ 
+               b_mspss_FRIENDS_av + 
+               b_mspss_FAMILY_av + 
+               structural_stigma_var + 
+               b_mspss_FRIENDS_av*structural_stigma_var + b_mspss_FAMILY_av*structural_stigma_var)
+
+stargazer(model_is_1, model_is_2, model_is_3, model_is_4, type = "html")
+
+```
+
+
+No variables in our model significantly predicted internalized stigma.
+
+### Calculating VIFs
+
+```{r, results = "asis", include=T, echo = T, message=FALSE, warning=FALSE}
+
+sqrt(vif(model_cdi_3))
+
+```
+
+VIFs appear fine (square root is < 2)
